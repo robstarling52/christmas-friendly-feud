@@ -2,7 +2,7 @@
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
-type Answer = { text: string; points: number; aliases?: string[] };
+type Answer = { text: string; points: number; aliases: string[] };
 type Round = { id: string; title: string; question: string; answers: Answer[] };
 
 type FastMoneyQuestion = { prompt: string; answers: Answer[] };
@@ -14,7 +14,6 @@ type SoundMode = "on" | "off";
 
 // -----------------------------
 // MAIN GAME STARTER DECK (default)
-// (You can still edit in Deck Builder later)
 // -----------------------------
 const STARTER_ROUNDS: Round[] = [
   {
@@ -348,6 +347,33 @@ function newRound(): Round {
   };
 }
 
+function sanitizeDeck(raw: any): Round[] {
+  if (!Array.isArray(raw)) return deepClone(STARTER_ROUNDS);
+  const cleaned: Round[] = raw
+    .filter(Boolean)
+    .map((r: any) => ({
+      id: String(r?.id || `r_${Math.random().toString(36).slice(2, 9)}`),
+      title: String(r?.title || "Round"),
+      question: String(r?.question || ""),
+      answers: Array.isArray(r?.answers)
+        ? r.answers.map((a: any) => ({
+            text: String(a?.text || ""),
+            points: Number(a?.points || 0),
+            aliases: Array.isArray(a?.aliases) ? a.aliases.map((x: any) => String(x)) : [],
+          }))
+        : [],
+    }));
+  return cleaned.length ? cleaned : deepClone(STARTER_ROUNDS);
+}
+
+function navigateToMode(mode: UiMode, newTab: boolean) {
+  if (typeof window === "undefined") return;
+  const u = new URL(window.location.href);
+  u.searchParams.set("mode", mode);
+  if (newTab) window.open(u.toString(), "_blank", "noopener,noreferrer");
+  else window.location.href = u.toString();
+}
+
 // -----------------------------
 // Sounds (no audio files)
 // -----------------------------
@@ -432,18 +458,19 @@ export default function Page() {
   // Main-game deck (persisted)
   const [rounds, setRounds] = useState<Round[]>(() => {
     if (typeof window === "undefined") return deepClone(STARTER_ROUNDS);
-    const saved = safeJsonParse<Round[]>(localStorage.getItem(STORAGE_DECK_KEY));
-    if (saved && Array.isArray(saved) && saved.length > 0) return saved;
-    return deepClone(STARTER_ROUNDS);
+    const saved = safeJsonParse<any>(localStorage.getItem(STORAGE_DECK_KEY));
+    return sanitizeDeck(saved ?? STARTER_ROUNDS);
   });
 
   useEffect(() => {
     if (typeof window === "undefined") return;
     try {
-      localStorage.setItem(STORAGE_DECK_KEY, JSON.stringify(rounds));
+      // always persist sanitized shape (prevents future TS/runtime weirdness)
+      localStorage.setItem(STORAGE_DECK_KEY, JSON.stringify(sanitizeDeck(rounds)));
     } catch {
       // ignore
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rounds]);
 
   // Setup controls
@@ -557,37 +584,41 @@ export default function Page() {
       setMessage("Deck is empty — add at least one round.");
       return;
     }
-    // ensure shape
-    const cleaned = draftDeck.map((r) => ({
-      ...r,
-      id: r.id || `r_${Math.random().toString(36).slice(2, 9)}`,
-      title: r.title || "Round",
-      question: r.question || "",
-      answers: (r.answers || []).map((a) => ({
-        text: a.text || "",
-        points: Number(a.points || 0),
-        aliases: Array.isArray(a.aliases) ? a.aliases : [],
-      })),
-    }));
-    setRounds(cleaned);
+    setRounds(sanitizeDeck(draftDeck));
     setStage("setup");
-    setMessage(`Deck saved (${cleaned.length} rounds).`);
+    setMessage(`Deck saved (${sanitizeDeck(draftDeck).length} rounds).`);
   }
 
   function updateRound(idx: number, patch: Partial<Round>) {
     setDraftDeck((prev) => {
-      const next = prev.map((r) => ({ ...r, answers: (r.answers || []).map((a) => ({ ...a, aliases: a.aliases || [] })) }));
+      const next = prev.map((r) => ({
+        ...r,
+        answers: (r.answers || []).map((a) => ({ ...a, aliases: Array.isArray(a.aliases) ? a.aliases : [] })),
+      }));
       next[idx] = { ...next[idx], ...patch };
+      // keep answers typed consistently if patch contains answers
+      if ((patch as any)?.answers) next[idx].answers = sanitizeDeck([next[idx]])[0].answers;
       return next;
     });
   }
 
   function updateAnswer(rIdx: number, aIdx: number, patch: Partial<Answer>) {
     setDraftDeck((prev) => {
-      const next = prev.map((r) => ({ ...r, answers: (r.answers || []).map((a) => ({ ...a, aliases: a.aliases || [] })) }));
+      const next = prev.map((r) => ({
+        ...r,
+        answers: (r.answers || []).map((a) => ({ ...a, aliases: Array.isArray(a.aliases) ? a.aliases : [] })),
+      }));
       const r = next[rIdx] || newRound();
       const answers = Array.isArray(r.answers) ? [...r.answers] : [];
-      answers[aIdx] = { ...(answers[aIdx] || { text: "", points: 0, aliases: [] }), ...patch };
+      answers[aIdx] = {
+        ...(answers[aIdx] || { text: "", points: 0, aliases: [] }),
+        ...patch,
+        aliases: Array.isArray((patch as any)?.aliases)
+          ? (patch as any).aliases
+          : Array.isArray((answers[aIdx] as any)?.aliases)
+          ? (answers[aIdx] as any).aliases
+          : [],
+      };
       next[rIdx] = { ...r, answers };
       return next;
     });
@@ -603,7 +634,7 @@ export default function Page() {
 
   function addAnswer(rIdx: number) {
     setDraftDeck((prev) => {
-      const next = prev.map((r) => ({ ...r, answers: (r.answers || []).map((a) => ({ ...a, aliases: a.aliases || [] })) }));
+      const next = prev.map((r) => ({ ...r }));
       const r = next[rIdx] || newRound();
       const answers = Array.isArray(r.answers) ? [...r.answers] : [];
       answers.push({ text: "", points: 0, aliases: [] });
@@ -614,7 +645,7 @@ export default function Page() {
 
   function deleteAnswer(rIdx: number, aIdx: number) {
     setDraftDeck((prev) => {
-      const next = prev.map((r) => ({ ...r, answers: (r.answers || []).map((a) => ({ ...a, aliases: a.aliases || [] })) }));
+      const next = prev.map((r) => ({ ...r }));
       const r = next[rIdx] || newRound();
       const answers = Array.isArray(r.answers) ? r.answers.filter((_, i) => i !== aIdx) : [];
       next[rIdx] = { ...r, answers };
@@ -626,8 +657,7 @@ export default function Page() {
     try {
       const text = await file.text();
       const parsed = JSON.parse(text);
-      if (!Array.isArray(parsed)) throw new Error("Deck must be a JSON array.");
-      setDraftDeck(parsed);
+      setDraftDeck(sanitizeDeck(parsed));
       setMessage("Imported deck into builder. Click Save Deck.");
     } catch (e: any) {
       alert(`Import failed: ${e?.message || "Invalid JSON"}`);
@@ -637,8 +667,7 @@ export default function Page() {
   function importFromTextbox() {
     try {
       const parsed = JSON.parse(importText);
-      if (!Array.isArray(parsed)) throw new Error("Deck must be a JSON array.");
-      setDraftDeck(parsed);
+      setDraftDeck(sanitizeDeck(parsed));
       setImportText("");
       setMessage("Imported deck into builder. Click Save Deck.");
     } catch (e: any) {
@@ -657,8 +686,16 @@ export default function Page() {
   const fmQ = fmRound.questions[fmQIndex];
 
   const [fmInput, setFmInput] = useState("");
-  const [fmP1, setFmP1] = useState<{ answers: string[]; points: number[]; total: number }>({ answers: [], points: [], total: 0 });
-  const [fmP2, setFmP2] = useState<{ answers: string[]; points: number[]; total: number }>({ answers: [], points: [], total: 0 });
+  const [fmP1, setFmP1] = useState<{ answers: string[]; points: number[]; total: number }>({
+    answers: [],
+    points: [],
+    total: 0,
+  });
+  const [fmP2, setFmP2] = useState<{ answers: string[]; points: number[]; total: number }>({
+    answers: [],
+    points: [],
+    total: 0,
+  });
 
   const [fmTimerSeconds, setFmTimerSeconds] = useState(25);
   const [fmTimeLeft, setFmTimeLeft] = useState(25);
@@ -758,25 +795,92 @@ export default function Page() {
     wrap: { maxWidth: 1200, margin: "0 auto", display: "grid", gap: 14 },
     title: { textAlign: "center", fontWeight: 900, fontSize: tvMode ? 46 : 40, margin: "8px 0 0" },
     sub: { textAlign: "center", opacity: 0.85, marginTop: 6 },
-    card: { border: "1px solid rgba(255,255,255,0.18)", background: "rgba(255,255,255,0.10)", borderRadius: 24, padding: 16 },
+    card: {
+      border: "1px solid rgba(255,255,255,0.18)",
+      background: "rgba(255,255,255,0.10)",
+      borderRadius: 24,
+      padding: 16,
+    },
     row: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" },
-    boardRow: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, padding: "12px 14px", borderRadius: 18, border: "1px solid rgba(255,255,255,0.18)", background: "rgba(0,0,0,0.10)" },
-    input: { width: "100%", padding: "10px 12px", borderRadius: 14, border: "1px solid rgba(255,255,255,0.25)", background: "rgba(0,0,0,0.20)", color: "white", outline: "none", fontSize: 16 },
-    btn: { padding: "10px 14px", borderRadius: 14, border: "1px solid rgba(255,255,255,0.25)", background: "rgba(255,255,255,0.16)", color: "white", fontWeight: 800, cursor: "pointer" },
-    btnGhost: { padding: "10px 14px", borderRadius: 14, border: "1px solid rgba(255,255,255,0.35)", background: "transparent", color: "white", fontWeight: 800, cursor: "pointer" },
+    boardRow: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "center",
+      gap: 12,
+      padding: "12px 14px",
+      borderRadius: 18,
+      border: "1px solid rgba(255,255,255,0.18)",
+      background: "rgba(0,0,0,0.10)",
+    },
+    input: {
+      width: "100%",
+      padding: "10px 12px",
+      borderRadius: 14,
+      border: "1px solid rgba(255,255,255,0.25)",
+      background: "rgba(0,0,0,0.20)",
+      color: "white",
+      outline: "none",
+      fontSize: 16,
+    },
+    btn: {
+      padding: "10px 14px",
+      borderRadius: 14,
+      border: "1px solid rgba(255,255,255,0.25)",
+      background: "rgba(255,255,255,0.16)",
+      color: "white",
+      fontWeight: 800,
+      cursor: "pointer",
+    },
+    btnGhost: {
+      padding: "10px 14px",
+      borderRadius: 14,
+      border: "1px solid rgba(255,255,255,0.35)",
+      background: "transparent",
+      color: "white",
+      fontWeight: 800,
+      cursor: "pointer",
+    },
     big: { fontSize: tvMode ? 42 : 26, fontWeight: 900 },
     small: { opacity: 0.85, fontSize: 13 },
-    pill: { padding: "6px 10px", borderRadius: 999, border: "1px solid rgba(255,255,255,0.22)", background: "rgba(255,255,255,0.10)", fontWeight: 800 },
+    pill: {
+      padding: "6px 10px",
+      borderRadius: 999,
+      border: "1px solid rgba(255,255,255,0.22)",
+      background: "rgba(255,255,255,0.10)",
+      fontWeight: 800,
+    },
   };
 
   // -----------------------------
-  // Render header
+  // Render header (includes mode buttons)
   // -----------------------------
   const header = (
     <div>
       <div style={styles.title}>Christmas Friendly Feud</div>
       <div style={styles.sub}>
         {tvMode ? "TV Board" : "Host Mode"} — TV: <b>?mode=tv</b> | Host: <b>?mode=host</b>
+      </div>
+
+      <div style={{ marginTop: 10, display: "flex", justifyContent: "center", gap: 10, flexWrap: "wrap" }}>
+        {tvMode ? (
+          <>
+            <button style={styles.btn} onClick={() => navigateToMode("host", false)}>
+              Go to Host Mode
+            </button>
+            <button style={styles.btnGhost} onClick={() => navigateToMode("host", true)}>
+              Open Host in New Tab
+            </button>
+          </>
+        ) : (
+          <>
+            <button style={styles.btnGhost} onClick={() => navigateToMode("tv", true)}>
+              Open TV Board (New Tab)
+            </button>
+            <button style={styles.btnGhost} onClick={() => navigateToMode("tv", false)}>
+              Switch to TV Mode
+            </button>
+          </>
+        )}
       </div>
     </div>
   );
@@ -793,8 +897,7 @@ export default function Page() {
           {tvMode ? (
             <div style={styles.card}>
               <div style={{ textAlign: "center", opacity: 0.9 }}>
-                TV mode is board-only. Open Host mode on your laptop for controls:
-                <div style={{ marginTop: 8, fontFamily: "monospace" }}>?mode=host</div>
+                TV mode is board-only. Use the button above to go to Host mode for controls.
               </div>
             </div>
           ) : (
@@ -805,8 +908,12 @@ export default function Page() {
                   <div style={{ fontSize: 26, fontWeight: 900 }}>Teams, deck, and sound</div>
                 </div>
                 <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                  <button style={styles.btnGhost} onClick={() => setStage("fastmoney")}>Fast Money</button>
-                  <button style={styles.btn} onClick={startMainGame}>Start Main Game</button>
+                  <button style={styles.btnGhost} onClick={() => setStage("fastmoney")}>
+                    Fast Money
+                  </button>
+                  <button style={styles.btn} onClick={startMainGame}>
+                    Start Main Game
+                  </button>
                 </div>
               </div>
 
@@ -829,19 +936,35 @@ export default function Page() {
                 <div>
                   <div style={styles.small}>Sound</div>
                   <div style={{ display: "flex", gap: 10 }}>
-                    <button style={soundMode === "on" ? styles.btn : styles.btnGhost} onClick={() => setSoundMode("on")}>On</button>
-                    <button style={soundMode === "off" ? styles.btn : styles.btnGhost} onClick={() => setSoundMode("off")}>Off</button>
+                    <button style={soundMode === "on" ? styles.btn : styles.btnGhost} onClick={() => setSoundMode("on")}>
+                      On
+                    </button>
+                    <button style={soundMode === "off" ? styles.btn : styles.btnGhost} onClick={() => setSoundMode("off")}>
+                      Off
+                    </button>
                   </div>
                 </div>
                 <div>
                   <div style={styles.small}>Volume</div>
-                  <input style={{ width: "100%" }} type="range" min={0} max={1} step={0.05} value={soundVolume} onChange={(e) => setSoundVolume(Number(e.target.value))} />
+                  <input
+                    style={{ width: "100%" }}
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    value={soundVolume}
+                    onChange={(e) => setSoundVolume(Number(e.target.value))}
+                  />
                 </div>
                 <div>
                   <div style={styles.small}>Test sounds</div>
                   <div style={{ display: "flex", gap: 10 }}>
-                    <button style={styles.btnGhost} onClick={() => sfx.correct()}>Chime</button>
-                    <button style={styles.btnGhost} onClick={() => sfx.wrong()}>Buzz</button>
+                    <button style={styles.btnGhost} onClick={() => sfx.correct()}>
+                      Chime
+                    </button>
+                    <button style={styles.btnGhost} onClick={() => sfx.wrong()}>
+                      Buzz
+                    </button>
                   </div>
                 </div>
               </div>
@@ -853,8 +976,12 @@ export default function Page() {
                   Main-game deck currently has <b>{rounds.length}</b> rounds (stored in this browser).
                 </div>
                 <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                  <button style={styles.btnGhost} onClick={openDeckBuilder}>Deck Builder (Easy Edit)</button>
-                  <button style={styles.btnGhost} onClick={resetDeckToStarter}>Reset Deck to Starter</button>
+                  <button style={styles.btnGhost} onClick={openDeckBuilder}>
+                    Deck Builder (Easy Edit)
+                  </button>
+                  <button style={styles.btnGhost} onClick={resetDeckToStarter}>
+                    Reset Deck to Starter
+                  </button>
                 </div>
               </div>
 
@@ -882,16 +1009,24 @@ export default function Page() {
                 <div style={{ fontSize: 26, fontWeight: 900 }}>Add / edit rounds without coding</div>
               </div>
               <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                <button style={styles.btnGhost} onClick={resetToSetup}>Back</button>
-                <button style={styles.btn} onClick={saveDeckBuilder}>Save Deck</button>
+                <button style={styles.btnGhost} onClick={resetToSetup}>
+                  Back
+                </button>
+                <button style={styles.btn} onClick={saveDeckBuilder}>
+                  Save Deck
+                </button>
               </div>
             </div>
 
             <div style={{ height: 12 }} />
 
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-              <button style={styles.btnGhost} onClick={addRound}>Add Round</button>
-              <button style={styles.btnGhost} onClick={() => downloadJson("christmas-friendly-feud-deck.json", draftDeck)}>Export JSON</button>
+              <button style={styles.btnGhost} onClick={addRound}>
+                Add Round
+              </button>
+              <button style={styles.btnGhost} onClick={() => downloadJson("christmas-friendly-feud-deck.json", draftDeck)}>
+                Export JSON
+              </button>
 
               <label style={{ display: "inline-flex", gap: 10, alignItems: "center" }}>
                 <input
@@ -938,7 +1073,9 @@ export default function Page() {
               }}
             />
             <div style={{ height: 10 }} />
-            <button style={styles.btnGhost} onClick={importFromTextbox}>Import from Textbox</button>
+            <button style={styles.btnGhost} onClick={importFromTextbox}>
+              Import from Textbox
+            </button>
 
             <div style={{ marginTop: 10, textAlign: "center", opacity: 0.9 }}>{message}</div>
           </div>
@@ -952,11 +1089,19 @@ export default function Page() {
                 </div>
                 <div style={{ flex: 2, minWidth: 320 }}>
                   <div style={styles.small}>Question</div>
-                  <input style={styles.input} value={r.question || ""} onChange={(e) => updateRound(rIdx, { question: e.target.value })} />
+                  <input
+                    style={styles.input}
+                    value={r.question || ""}
+                    onChange={(e) => updateRound(rIdx, { question: e.target.value })}
+                  />
                 </div>
                 <div style={{ display: "flex", gap: 10, alignItems: "end" }}>
-                  <button style={styles.btnGhost} onClick={() => addAnswer(rIdx)}>Add Answer</button>
-                  <button style={styles.btnGhost} onClick={() => deleteRound(rIdx)}>Delete Round</button>
+                  <button style={styles.btnGhost} onClick={() => addAnswer(rIdx)}>
+                    Add Answer
+                  </button>
+                  <button style={styles.btnGhost} onClick={() => deleteRound(rIdx)}>
+                    Delete Round
+                  </button>
                 </div>
               </div>
 
@@ -985,13 +1130,18 @@ export default function Page() {
                         value={(a.aliases || []).join(", ")}
                         onChange={(e) =>
                           updateAnswer(rIdx, aIdx, {
-                            aliases: (e.target.value || "").split(",").map((s) => s.trim()).filter(Boolean),
+                            aliases: (e.target.value || "")
+                              .split(",")
+                              .map((s) => s.trim())
+                              .filter(Boolean),
                           })
                         }
                       />
                     </div>
                     <div style={{ display: "flex", alignItems: "end" }}>
-                      <button style={styles.btnGhost} onClick={() => deleteAnswer(rIdx, aIdx)}>Remove</button>
+                      <button style={styles.btnGhost} onClick={() => deleteAnswer(rIdx, aIdx)}>
+                        Remove
+                      </button>
                     </div>
                   </div>
                 ))}
@@ -1008,7 +1158,6 @@ export default function Page() {
   // -----------------------------
   if (stage === "fastmoney") {
     if (tvMode) {
-      // TV view for Fast Money
       return (
         <div style={styles.page}>
           <div style={styles.wrap}>
@@ -1030,14 +1179,15 @@ export default function Page() {
               </div>
               <div style={{ marginTop: 10, fontSize: 38, fontWeight: 900 }}>{fmQ?.prompt}</div>
 
-              <div style={{ marginTop: 14, textAlign: "center", opacity: 0.9 }}>{teamAName} vs {teamBName}</div>
+              <div style={{ marginTop: 14, textAlign: "center", opacity: 0.9 }}>
+                {teamAName} vs {teamBName}
+              </div>
             </div>
           </div>
         </div>
       );
     }
 
-    // Host view for Fast Money
     return (
       <div style={styles.page}>
         <div style={styles.wrap}>
@@ -1050,8 +1200,12 @@ export default function Page() {
                 <div style={{ fontSize: 26, fontWeight: 900 }}>{fmRound.title}</div>
               </div>
               <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                <button style={styles.btnGhost} onClick={resetToSetup}>Back to Setup</button>
-                <button style={styles.btnGhost} onClick={fmResetAll}>Reset FM</button>
+                <button style={styles.btnGhost} onClick={resetToSetup}>
+                  Back to Setup
+                </button>
+                <button style={styles.btnGhost} onClick={fmResetAll}>
+                  Reset FM
+                </button>
               </div>
             </div>
 
@@ -1097,12 +1251,18 @@ export default function Page() {
                 onChange={(e) => setFmInput(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && fmSubmit()}
               />
-              <button style={styles.btn} onClick={fmSubmit}>Submit</button>
+              <button style={styles.btn} onClick={fmSubmit}>
+                Submit
+              </button>
             </div>
 
             <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-              <button style={styles.btn} onClick={fmStartTimer} disabled={fmRunning}>Start Timer</button>
-              <button style={styles.btnGhost} onClick={fmStopTimer} disabled={!fmRunning}>Stop Timer</button>
+              <button style={styles.btn} onClick={fmStartTimer} disabled={fmRunning}>
+                Start Timer
+              </button>
+              <button style={styles.btnGhost} onClick={fmStopTimer} disabled={!fmRunning}>
+                Stop Timer
+              </button>
 
               <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
                 <span style={styles.small}>Timer seconds</span>
@@ -1164,7 +1324,7 @@ export default function Page() {
   const boardRows = (round?.answers || []).map((a, i) => {
     const r = revealedSet.has(a.text);
     return (
-      <div key={a.text} style={styles.boardRow}>
+      <div key={`${a.text}-${i}`} style={styles.boardRow}>
         <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
           <div style={{ width: 26, opacity: 0.85 }}>{i + 1}</div>
           <div style={{ fontSize: tvMode ? 30 : 18, fontWeight: 900 }}>{r ? a.text : "______________"}</div>
@@ -1175,7 +1335,6 @@ export default function Page() {
   });
 
   if (tvMode) {
-    // TV board: no inputs, no controls
     return (
       <div style={styles.page}>
         <div style={styles.wrap}>
@@ -1184,7 +1343,9 @@ export default function Page() {
           <div style={styles.card}>
             <div style={styles.row}>
               <div>
-                <div style={styles.small}>{round?.title} (Round {roundIndex + 1} of {rounds.length})</div>
+                <div style={styles.small}>
+                  {round?.title} (Round {roundIndex + 1} of {rounds.length})
+                </div>
                 <div style={{ fontSize: 34, fontWeight: 900, marginTop: 6 }}>{round?.question}</div>
               </div>
               <div style={{ textAlign: "right" }}>
@@ -1200,7 +1361,9 @@ export default function Page() {
             <div style={styles.row}>
               <div>
                 <div style={styles.small}>Scores</div>
-                <div style={{ fontSize: 28, fontWeight: 900 }}>{teamAName}: {scoreA} | {teamBName}: {scoreB}</div>
+                <div style={{ fontSize: 28, fontWeight: 900 }}>
+                  {teamAName}: {scoreA} | {teamBName}: {scoreB}
+                </div>
               </div>
               <div style={{ textAlign: "right" }}>
                 <div style={styles.small}>Active</div>
@@ -1225,15 +1388,25 @@ export default function Page() {
             <div>
               <div style={styles.small}>Scoreboard</div>
               <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-                <span style={styles.pill}>{teamAName}: {scoreA}</span>
-                <span style={styles.pill}>{teamBName}: {scoreB}</span>
+                <span style={styles.pill}>
+                  {teamAName}: {scoreA}
+                </span>
+                <span style={styles.pill}>
+                  {teamBName}: {scoreB}
+                </span>
                 <span style={styles.pill}>Bank: {bank}</span>
               </div>
             </div>
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-              <button style={styles.btnGhost} onClick={resetToSetup}>Setup</button>
-              <button style={styles.btnGhost} onClick={openDeckBuilder}>Deck Builder</button>
-              <button style={styles.btnGhost} onClick={() => setStage("fastmoney")}>Fast Money</button>
+              <button style={styles.btnGhost} onClick={resetToSetup}>
+                Setup
+              </button>
+              <button style={styles.btnGhost} onClick={openDeckBuilder}>
+                Deck Builder
+              </button>
+              <button style={styles.btnGhost} onClick={() => setStage("fastmoney")}>
+                Fast Money
+              </button>
             </div>
           </div>
 
@@ -1241,7 +1414,9 @@ export default function Page() {
 
           <div style={styles.row}>
             <div>
-              <div style={styles.small}>{round?.title} (Round {roundIndex + 1} of {rounds.length})</div>
+              <div style={styles.small}>
+                {round?.title} (Round {roundIndex + 1} of {rounds.length})
+              </div>
               <div style={{ fontSize: 28, fontWeight: 900 }}>{round?.question}</div>
             </div>
             <div style={{ textAlign: "right" }}>
@@ -1263,7 +1438,9 @@ export default function Page() {
               onChange={(e) => setGuess(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && submitGuess()}
             />
-            <button style={styles.btn} onClick={submitGuess}>Submit</button>
+            <button style={styles.btn} onClick={submitGuess}>
+              Submit
+            </button>
           </div>
 
           <div style={{ height: 10 }} />
@@ -1272,11 +1449,21 @@ export default function Page() {
             <button style={styles.btnGhost} onClick={() => setActiveTeam(activeTeam === "A" ? "B" : "A")}>
               Switch Active Team
             </button>
-            <button style={styles.btn} onClick={() => awardBank(activeTeam)}>Award Bank to Active Team</button>
-            <button style={styles.btnGhost} onClick={() => awardBank(activeTeam === "A" ? "B" : "A")}>Steal: Award to Other Team</button>
-            <button style={styles.btnGhost} onClick={revealAll}>Reveal All</button>
-            <button style={styles.btnGhost} onClick={nextRound}>Next Round</button>
-            <button style={styles.btnGhost} onClick={() => setBank(0)}>Clear Bank</button>
+            <button style={styles.btn} onClick={() => awardBank(activeTeam)}>
+              Award Bank to Active Team
+            </button>
+            <button style={styles.btnGhost} onClick={() => awardBank(activeTeam === "A" ? "B" : "A")}>
+              Steal: Award to Other Team
+            </button>
+            <button style={styles.btnGhost} onClick={revealAll}>
+              Reveal All
+            </button>
+            <button style={styles.btnGhost} onClick={nextRound}>
+              Next Round
+            </button>
+            <button style={styles.btnGhost} onClick={() => setBank(0)}>
+              Clear Bank
+            </button>
           </div>
 
           <div style={{ textAlign: "center", marginTop: 10, opacity: 0.9 }}>{message}</div>
@@ -1289,3 +1476,4 @@ export default function Page() {
     </div>
   );
 }
+
